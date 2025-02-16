@@ -16,31 +16,31 @@
  * SPDX-License-Identifier: Apache-2.0
  * Copyright (c) Steve Springett. All Rights Reserved.
  */
-
 package alpine.server.auth;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.util.Date;
-import java.util.HexFormat;
-import java.util.List;
-
-import javax.naming.AuthenticationException;
-
-import org.assertj.core.api.Assertions;
+import alpine.Config;
+import alpine.model.ApiKey;
+import alpine.model.Team;
+import alpine.persistence.AlpineQueryManager;
+import alpine.security.ApiKeyDecoder;
+import alpine.security.ApiKeyGenerator;
+import alpine.server.persistence.PersistenceManagerFactory;
 import org.glassfish.jersey.server.ContainerRequest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 
-import alpine.Config;
-import alpine.model.ApiKey;
-import alpine.persistence.AlpineQueryManager;
-import alpine.security.ApiKeyGenerator;
-import alpine.server.persistence.PersistenceManagerFactory;
+import javax.naming.AuthenticationException;
+import java.util.Date;
+import java.util.List;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatExceptionOfType;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 public class ApiKeyAuthenticationServiceTest {
+
     private static final String prefix = Config.getInstance().getProperty(Config.AlpineKey.API_KEY_PREFIX);
 
     @BeforeAll
@@ -54,20 +54,41 @@ public class ApiKeyAuthenticationServiceTest {
     }
 
     @Test
-    public void authenticationWorksWithRigthKey() throws AuthenticationException {
+    public void authenticationWorksWithRightKey() throws AuthenticationException {
         ApiKey apiKey;
         try (final AlpineQueryManager qm = new AlpineQueryManager()) {
             final var team = qm.createTeam("Test");
             apiKey = qm.createApiKey(team);
         }
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
                 .thenReturn(apiKey.getClearTextKey());
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
         final ApiKey authenticatedUser = (ApiKey) authService.authenticate();
-        Assertions.assertThat(authenticatedUser).isNotNull();
-        Assertions.assertThat(authenticatedUser.getId() == apiKey.getId());
+        assertThat(authenticatedUser).isNotNull();
+        assertThat(authenticatedUser.getId()).isEqualTo(apiKey.getId());
+    }
+
+    @Test
+    void shouldAuthenticateWithDifferentPrefix() throws AuthenticationException {
+        final ApiKey apiKey;
+        try (final var qm = new AlpineQueryManager()) {
+            final Team team = qm.createTeam("Test");
+            apiKey = qm.createApiKey(team);
+        }
+
+        final String keyWithDifferentPrefix = apiKey.getClearTextKey().replaceFirst("^alpine_", "foobar_");
+        assertThat(keyWithDifferentPrefix).startsWith("foobar_"); // Sanity check that replacement worked.
+
+        final var containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
+                .thenReturn(keyWithDifferentPrefix);
+        final var authService = new ApiKeyAuthenticationService(containerRequestMock, false);
+
+        final var authenticatedApiKey = (ApiKey) authService.authenticate();
+        assertThat(authenticatedApiKey).isNotNull();
+        assertThat(authenticatedApiKey.getId()).isEqualTo(apiKey.getId());
     }
 
     @Test
@@ -78,14 +99,42 @@ public class ApiKeyAuthenticationServiceTest {
             var originalApiKey = qm.createApiKey(team);
             apiKey = qm.regenerateApiKey(originalApiKey);
         }
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
                 .thenReturn(apiKey.getClearTextKey());
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
         final ApiKey authenticatedUser = (ApiKey) authService.authenticate();
-        Assertions.assertThat(authenticatedUser).isNotNull();
-        Assertions.assertThat(authenticatedUser.getId() == apiKey.getId());
+        assertThat(authenticatedUser).isNotNull();
+        assertThat(authenticatedUser.getId()).isEqualTo(apiKey.getId());
+    }
+
+    @Test
+    public void shouldAuthenticateWithLegacyApiKey() throws AuthenticationException {
+        final ApiKey apiKey = createLegacyApiKey(/* withPrefix */ false);
+
+        final var containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
+                .thenReturn(apiKey.getClearTextKey());
+        final var authService = new ApiKeyAuthenticationService(containerRequestMock, false);
+
+        final var authenticatedApiKey = (ApiKey) authService.authenticate();
+        assertThat(authenticatedApiKey).isNotNull();
+        assertThat(authenticatedApiKey.getId()).isEqualTo(apiKey.getId());
+    }
+
+    @Test
+    public void shouldAuthenticateWithLegacyApiKeyWithPrefix() throws AuthenticationException {
+        final ApiKey apiKey = createLegacyApiKey(/* withPrefix */ true);
+
+        final var containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
+                .thenReturn(apiKey.getClearTextKey());
+        final var authService = new ApiKeyAuthenticationService(containerRequestMock, false);
+
+        final var authenticatedApiKey = (ApiKey) authService.authenticate();
+        assertThat(authenticatedApiKey).isNotNull();
+        assertThat(authenticatedApiKey.getId()).isEqualTo(apiKey.getId());
     }
 
     @Test
@@ -98,12 +147,12 @@ public class ApiKeyAuthenticationServiceTest {
             oldKey = apiKey.getClearTextKey();
             qm.regenerateApiKey(apiKey);
         }
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
                 .thenReturn(oldKey);
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
-        Assertions.assertThatExceptionOfType(AuthenticationException.class)
+        assertThatExceptionOfType(AuthenticationException.class)
                 .isThrownBy(authService::authenticate);
     }
 
@@ -114,12 +163,12 @@ public class ApiKeyAuthenticationServiceTest {
             final var team = qm.createTeam("Test");
             apiKey = qm.createApiKey(team);
         }
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
-                .thenReturn(prefix + apiKey.getPublicId() + "0".repeat(ApiKey.API_KEY_LENGTH));
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
+                .thenReturn(prefix + apiKey.getPublicId() + "0".repeat(ApiKey.API_KEY_LENGTH - ApiKey.PUBLIC_ID_LENGTH));
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
-        Assertions.assertThatExceptionOfType(AuthenticationException.class)
+        assertThatExceptionOfType(AuthenticationException.class)
                 .isThrownBy(authService::authenticate);
     }
 
@@ -130,12 +179,12 @@ public class ApiKeyAuthenticationServiceTest {
             final var team = qm.createTeam("Test");
             apiKey = qm.createApiKey(team);
         }
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
-                .thenReturn(prefix + "0".repeat(ApiKey.PUBLIC_ID_LENGTH) + ApiKey.getOnlyKey(apiKey.getKey(), false));
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
+                .thenReturn(prefix + "0".repeat(ApiKey.PUBLIC_ID_LENGTH) + ApiKey.getOnlyKey(apiKey.getClearTextKey()));
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
-        Assertions.assertThatExceptionOfType(AuthenticationException.class)
+        assertThatExceptionOfType(AuthenticationException.class)
                 .isThrownBy(authService::authenticate);
     }
 
@@ -145,12 +194,12 @@ public class ApiKeyAuthenticationServiceTest {
             final var team = qm.createTeam("Test");
             qm.createApiKey(team);
         }
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
                 .thenReturn("InvalidKey");
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
-        Assertions.assertThatExceptionOfType(AuthenticationException.class)
+        assertThatExceptionOfType(AuthenticationException.class)
                 .isThrownBy(authService::authenticate);
     }
 
@@ -161,66 +210,58 @@ public class ApiKeyAuthenticationServiceTest {
             final var team = qm.createTeam("Test");
             apiKey = qm.createApiKey(team);
         }
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
                 .thenReturn(apiKey.getClearTextKey() + "1");
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
-        Assertions.assertThatExceptionOfType(AuthenticationException.class)
+        assertThatExceptionOfType(AuthenticationException.class)
                 .isThrownBy(authService::authenticate);
     }
 
     @Test
-    public void authenticationLegacyStillWorks() throws NoSuchAlgorithmException, AuthenticationException {
-        final var apiKey = genLegacyKey();
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
-                .thenReturn(apiKey.getClearTextKey());
+    public void authenticationShouldThrowAuthenticationExceptionForInvalidKeyForLegacy() {
+        final var apiKey = createLegacyApiKey(true);
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
+                .thenReturn(prefix + apiKey.getPublicId() + "0".repeat(ApiKey.API_KEY_LENGTH - ApiKey.PUBLIC_ID_LENGTH));
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
-        final ApiKey authenticatedUser = (ApiKey) authService.authenticate();
-        Assertions.assertThat(authenticatedUser).isNotNull();
-        Assertions.assertThat(authenticatedUser.getId() == apiKey.getId());
-    }
-
-    @Test
-    public void authenticationShouldThrowAuthenticationExceptionForInvalidKeyForLegacy() throws NoSuchAlgorithmException {
-        final var apiKey = genLegacyKey();
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
-                .thenReturn(prefix + apiKey.getPublicId() + "0".repeat(ApiKey.API_KEY_LENGTH));
-        final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
-
-        Assertions.assertThatExceptionOfType(AuthenticationException.class)
+        assertThatExceptionOfType(AuthenticationException.class)
                 .isThrownBy(authService::authenticate);
     }
 
     @Test
-    public void authenticationShouldThrowAuthenticationExceptionForInvalidPrefixForLegacy() throws NoSuchAlgorithmException {
-        final var apiKey = genLegacyKey();
-        final ContainerRequest containerRequestMock = Mockito.mock(ContainerRequest.class);
-        Mockito.when(containerRequestMock.getHeaderString("X-Api-Key"))
-                .thenReturn(prefix + "0".repeat(ApiKey.PUBLIC_ID_LENGTH) + ApiKey.getOnlyKey(apiKey.getKey(), true));
+    public void authenticationShouldThrowAuthenticationExceptionForInvalidPrefixForLegacy() {
+        final var apiKey = createLegacyApiKey(true);
+        final ContainerRequest containerRequestMock = mock(ContainerRequest.class);
+        when(containerRequestMock.getHeaderString("X-Api-Key"))
+                .thenReturn(prefix + "0".repeat(ApiKey.PUBLIC_ID_LENGTH) + ApiKey.getOnlyKey(apiKey.getClearTextKey()));
         final ApiKeyAuthenticationService authService = new ApiKeyAuthenticationService(containerRequestMock, false);
 
-        Assertions.assertThatExceptionOfType(AuthenticationException.class)
+        assertThatExceptionOfType(AuthenticationException.class)
                 .isThrownBy(authService::authenticate);
     }
 
-    private ApiKey genLegacyKey() throws NoSuchAlgorithmException {
-        final var apiKey = new ApiKey();
-        try (final AlpineQueryManager qm = new AlpineQueryManager()) {
-            final String clearKey = ApiKeyGenerator.generate(0, 31);
-            final var team = qm.createTeam("Test");
-            final MessageDigest digest = MessageDigest.getInstance("SHA3-256");
-            final String hashedKey = HexFormat.of().formatHex(digest.digest(ApiKey.getOnlyKeyAsBytes(clearKey, true)));
-            apiKey.setKey(hashedKey);
-            apiKey.setPublicId(ApiKey.getPublicId(clearKey, true));
+    private ApiKey createLegacyApiKey(final boolean withPrefix) {
+        String rawKey = ApiKeyGenerator.generateSecret(ApiKey.API_KEY_LENGTH);
+        if (withPrefix) {
+            rawKey = "alpine_" + rawKey;
+        }
+
+        final ApiKey decodedApiKey = ApiKeyDecoder.decode(rawKey);
+
+         try (final AlpineQueryManager qm = new AlpineQueryManager()) {
+             final Team team = qm.createTeam("Test");
+
+            final var apiKey = new ApiKey();
+            apiKey.setKey(decodedApiKey.getKey());
+            apiKey.setPublicId(decodedApiKey.getPublicId());
             apiKey.setCreated(new Date());
             apiKey.setTeams(List.of(team));
             qm.persist(apiKey);
-            apiKey.setClearTextKey(clearKey);
+            apiKey.setClearTextKey(decodedApiKey.getClearTextKey());
+            return apiKey;
         }
-        return apiKey;
     }
 }
